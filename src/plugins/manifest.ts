@@ -205,22 +205,38 @@ export type PluginManifestSetupProvider = {
   authEvidence?: PluginManifestSetupProviderAuthEvidence[];
 };
 
-export type PluginManifestSetupProviderAuthEvidence = {
-  /** Generic local file evidence gated by required environment metadata. */
-  type: "local-file-with-env";
-  /** Optional env var containing an explicit credential file path. */
-  fileEnvVar?: string;
-  /** Optional fallback credential file paths. Supports `${HOME}` and `${APPDATA}`. */
-  fallbackPaths?: string[];
+type PluginManifestSetupProviderAuthEvidenceCommon = {
   /** At least one of these env vars must be non-empty when provided. */
   requiresAnyEnv?: string[];
   /** Every env var listed here must be non-empty when provided. */
   requiresAllEnv?: string[];
+  /** Every env var listed here must be empty/unset for the evidence to hold. */
+  requiresAbsentEnv?: string[];
   /** Non-secret marker returned when this evidence is present. */
   credentialMarker: string;
   /** Human-readable auth source label. */
   source?: string;
 };
+
+export type PluginManifestSetupProviderAuthEvidence =
+  | (PluginManifestSetupProviderAuthEvidenceCommon & {
+      /** Generic local file evidence gated by required environment metadata. */
+      type: "local-file-with-env";
+      /** Optional env var containing an explicit credential file path. */
+      fileEnvVar?: string;
+      /** Optional fallback credential file paths. Supports `${HOME}` and `${APPDATA}`. */
+      fallbackPaths?: string[];
+    })
+  | (PluginManifestSetupProviderAuthEvidenceCommon & {
+      /**
+       * Operator opt-in flag asserting ambient credentials are reachable (for
+       * example GCP metadata-server ADC), which cannot be detected synchronously.
+       * The evidence holds when any listed flag env var is truthy.
+       */
+      type: "env-flag";
+      /** Env vars whose truthy value asserts the ambient credential exists. */
+      flagEnvVars: string[];
+    });
 
 export type PluginManifestSetup = {
   /** Cheap provider setup metadata exposed before runtime loads. */
@@ -1426,30 +1442,50 @@ function normalizeManifestSetupProviderAuthEvidence(
   }
   const normalized: PluginManifestSetupProviderAuthEvidence[] = [];
   for (const entry of value) {
-    if (!isRecord(entry) || entry.type !== "local-file-with-env") {
+    if (!isRecord(entry)) {
       continue;
     }
     const credentialMarker = normalizeOptionalString(entry.credentialMarker);
     if (!credentialMarker) {
       continue;
     }
-    const fileEnvVar = normalizeOptionalString(entry.fileEnvVar);
-    const fallbackPaths = normalizeTrimmedStringList(entry.fallbackPaths);
-    if (!fileEnvVar && fallbackPaths.length === 0) {
-      continue;
-    }
     const requiresAnyEnv = normalizeTrimmedStringList(entry.requiresAnyEnv);
     const requiresAllEnv = normalizeTrimmedStringList(entry.requiresAllEnv);
+    const requiresAbsentEnv = normalizeTrimmedStringList(entry.requiresAbsentEnv);
     const source = normalizeOptionalString(entry.source);
-    normalized.push({
-      type: "local-file-with-env",
-      ...(fileEnvVar ? { fileEnvVar } : {}),
-      ...(fallbackPaths.length > 0 ? { fallbackPaths } : {}),
+    const common = {
       ...(requiresAnyEnv.length > 0 ? { requiresAnyEnv } : {}),
       ...(requiresAllEnv.length > 0 ? { requiresAllEnv } : {}),
+      ...(requiresAbsentEnv.length > 0 ? { requiresAbsentEnv } : {}),
       credentialMarker,
       ...(source ? { source } : {}),
-    });
+    };
+    if (entry.type === "local-file-with-env") {
+      const fileEnvVar = normalizeOptionalString(entry.fileEnvVar);
+      const fallbackPaths = normalizeTrimmedStringList(entry.fallbackPaths);
+      if (!fileEnvVar && fallbackPaths.length === 0) {
+        continue;
+      }
+      normalized.push({
+        type: "local-file-with-env",
+        ...(fileEnvVar ? { fileEnvVar } : {}),
+        ...(fallbackPaths.length > 0 ? { fallbackPaths } : {}),
+        ...common,
+      });
+      continue;
+    }
+    if (entry.type === "env-flag") {
+      const flagEnvVars = normalizeTrimmedStringList(entry.flagEnvVars);
+      if (flagEnvVars.length === 0) {
+        continue;
+      }
+      normalized.push({
+        type: "env-flag",
+        flagEnvVars,
+        ...common,
+      });
+      continue;
+    }
   }
   return normalized.length > 0 ? normalized : undefined;
 }

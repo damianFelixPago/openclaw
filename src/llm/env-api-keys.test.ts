@@ -9,6 +9,7 @@ const envKeys = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_VERTEX_USE_GCP_METADATA",
   "KIMI_API_KEY",
   "KIMICODE_API_KEY",
   "MOONSHOT_API_KEY",
@@ -51,7 +52,60 @@ describe("getEnvApiKey", () => {
         vi.resetModules();
         const { getEnvApiKey } = await import("./env-api-keys.js");
 
-        expect(getEnvApiKey("google-vertex")).toBe("<authenticated>");
+        expect(getEnvApiKey("google-vertex")).toBe("gcp-vertex-credentials");
+      },
+    );
+  });
+
+  it("detects Google Vertex metadata-server ADC when opted in via env", async () => {
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: "true",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_PROJECT: "vertex-project",
+        GOOGLE_APPLICATION_CREDENTIALS: undefined,
+      },
+      async () => {
+        vi.resetModules();
+        const { getEnvApiKey } = await import("./env-api-keys.js");
+
+        expect(getEnvApiKey("google-vertex")).toBe("gcp-vertex-credentials");
+      },
+    );
+  });
+
+  it("does not treat the metadata opt-in as auth without project and location", async () => {
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: "true",
+        GOOGLE_CLOUD_LOCATION: undefined,
+        GOOGLE_CLOUD_PROJECT: undefined,
+        GOOGLE_APPLICATION_CREDENTIALS: undefined,
+      },
+      async () => {
+        vi.resetModules();
+        const { getEnvApiKey } = await import("./env-api-keys.js");
+
+        expect(getEnvApiKey("google-vertex")).toBeUndefined();
+      },
+    );
+  });
+
+  it("lets a configured ADC key file preempt the metadata opt-in", async () => {
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: "true",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_PROJECT: "vertex-project",
+        // Points at a missing file: the metadata path is suppressed and the
+        // missing key file is not usable, so no env auth is reported.
+        GOOGLE_APPLICATION_CREDENTIALS: join(tmpdir(), "missing-adc-does-not-exist.json"),
+      },
+      async () => {
+        vi.resetModules();
+        const { getEnvApiKey } = await import("./env-api-keys.js");
+
+        expect(getEnvApiKey("google-vertex")).toBeUndefined();
       },
     );
   });
@@ -103,7 +157,7 @@ describe("getEnvApiKey", () => {
 
         expect(getEnvApiKey("google-vertex")).toBeUndefined();
         await writeFile(credentialsPath, "{}", "utf-8");
-        expect(getEnvApiKey("google-vertex")).toBe("<authenticated>");
+        expect(getEnvApiKey("google-vertex")).toBe("gcp-vertex-credentials");
       },
     );
   });

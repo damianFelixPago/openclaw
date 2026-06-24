@@ -191,6 +191,19 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     });
   });
 
+  it("drops the Vertex ADC marker from the cfg model-provider key fallback", () => {
+    // The non-secret Vertex ADC marker is not a Gemini API key, so the realtime
+    // (Generative Language) path must not send it as x-goog-api-key.
+    const provider = buildGoogleRealtimeVoiceProvider();
+    const resolved = provider.resolveConfig?.({
+      cfg: {
+        models: { providers: { google: { apiKey: "gcp-vertex-credentials" } } },
+      } as never,
+      rawConfig: { providers: { google: { model: "gemini-live-2.5-flash-preview" } } },
+    });
+    expect(resolved?.apiKey).toBeUndefined();
+  });
+
   it("connects with Google Live setup config and tool declarations", async () => {
     const provider = buildGoogleRealtimeVoiceProvider();
     const bridge = provider.createBridge({

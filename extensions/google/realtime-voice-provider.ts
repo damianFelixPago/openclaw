@@ -63,6 +63,10 @@ const GOOGLE_REALTIME_BROWSER_NEW_SESSION_TTL_MS = 60 * 1000;
 const GOOGLE_REALTIME_RECONNECT_MAX_ATTEMPTS = 3;
 const GOOGLE_REALTIME_RECONNECT_BASE_DELAY_MS = 250;
 const GOOGLE_REALTIME_RECONNECT_MAX_DELAY_MS = 2_000;
+// The non-secret Vertex ADC marker authorizes the Vertex transport only; it is
+// not a Gemini API key, so the shared google provider key must not be sent as
+// x-goog-api-key to the realtime Generative Language API.
+const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
 const MULAW_LINEAR_SAMPLES = new Int16Array(256);
 
 for (let i = 0; i < MULAW_LINEAR_SAMPLES.length; i += 1) {
@@ -220,11 +224,12 @@ function normalizeProviderConfig(
   cfg?: OpenClawConfig,
 ): GoogleRealtimeVoiceProviderConfig {
   const raw = resolveGoogleRealtimeProviderConfigRecord(config);
+  const resolvedApiKey = normalizeResolvedSecretInputString({
+    value: raw?.apiKey ?? cfg?.models?.providers?.google?.apiKey,
+    path: "plugins.entries.voice-call.config.realtime.providers.google.apiKey",
+  });
   return {
-    apiKey: normalizeResolvedSecretInputString({
-      value: raw?.apiKey ?? cfg?.models?.providers?.google?.apiKey,
-      path: "plugins.entries.voice-call.config.realtime.providers.google.apiKey",
-    }),
+    apiKey: resolvedApiKey === GCP_VERTEX_CREDENTIALS_MARKER ? undefined : resolvedApiKey,
     model: trimToUndefined(raw?.model),
     voice: trimToUndefined(raw?.speakerVoice) ?? trimToUndefined(raw?.voice),
     temperature: asFiniteNumber(raw?.temperature),

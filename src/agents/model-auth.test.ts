@@ -521,6 +521,414 @@ describe("resolveUsableCustomProviderApiKey", () => {
     expect(resolved).toBeNull();
   });
 
+  it("does not pass the Vertex ADC marker through for a non-Vertex provider config", () => {
+    // Same "google" provider id as the positive case below, but nothing marks the
+    // Vertex API (no provider-level api: "google-vertex" and no such per-model api).
+    // The marker must stay dropped so the passthrough cannot be abused to smuggle a
+    // non-secret marker into arbitrary providers; it is scoped to Vertex configs.
+    const resolved = resolveUsableCustomProviderApiKey({
+      cfg: {
+        models: {
+          providers: {
+            google: {
+              baseUrl: "https://generativelanguage.googleapis.com",
+              apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+              models: [],
+            },
+          },
+        },
+      },
+      provider: "google",
+    });
+    expect(resolved).toBeNull();
+  });
+
+  it("passes the Vertex ADC marker through for a Vertex model under the google provider", () => {
+    // Maestro's deployment shape: Vertex is registered under the "google"
+    // provider id with the Vertex API marked per-model (api: "google-vertex").
+    // The marker resolves when the selected request targets the Vertex model...
+    const cfg = {
+      models: {
+        providers: {
+          google: {
+            baseUrl: "https://aiplatform.googleapis.com",
+            apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+            models: [
+              {
+                id: "gemini-2.5-flash",
+                name: "Gemini 2.5 Flash",
+                api: "google-vertex" as const,
+                reasoning: false,
+                input: ["text" as const],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 4096,
+              },
+            ],
+          },
+        },
+      },
+    };
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg,
+        provider: "google",
+        modelApi: "google-vertex",
+      }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+    // ...but a model-agnostic, provider-level caller (no model api) such as the
+    // Google image/video/music SDK paths resolves `provider: "google"` and then
+    // sends a Gemini request, so the Vertex ADC marker must NOT be returned for a
+    // provider that is not explicitly declared Vertex at the provider level.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg,
+        provider: "google",
+      }),
+    ).toBeNull();
+  });
+
+  it("excludes the AI Studio env markers under the google provider for a Vertex model", () => {
+    // GEMINI_API_KEY / GOOGLE_API_KEY are AI Studio (Gemini) credentials that are
+    // invalid for the Vertex transport, so for a Vertex request under the generic
+    // "google" provider they must not be returned (or they would be sent as
+    // x-goog-api-key). They remain usable for a Gemini-API request.
+    const makeCfg = (apiKey: string) => ({
+      models: {
+        providers: {
+          google: {
+            baseUrl: "https://aiplatform.googleapis.com",
+            apiKey,
+            models: [
+              {
+                id: "gemini-2.5-flash",
+                name: "Gemini 2.5 Flash",
+                api: "google-vertex" as const,
+                reasoning: false,
+                input: ["text" as const],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 4096,
+              },
+            ],
+          },
+        },
+      },
+    });
+    const env = {
+      GEMINI_API_KEY: "gemini-studio-key", // pragma: allowlist secret
+      GOOGLE_API_KEY: "google-studio-key", // pragma: allowlist secret
+      GOOGLE_CLOUD_API_KEY: "vertex-express-key", // pragma: allowlist secret
+    } as NodeJS.ProcessEnv;
+    for (const marker of ["GEMINI_API_KEY", "GOOGLE_API_KEY"]) {
+      expect(
+        resolveUsableCustomProviderApiKey({
+          cfg: makeCfg(marker),
+          provider: "google",
+          modelApi: "google-vertex",
+          env,
+        }),
+      ).toBeNull();
+      // A google-generative-ai request routed through Vertex by an aiplatform base
+      // URL is also a Vertex request: the AI Studio key must not be returned.
+      expect(
+        resolveUsableCustomProviderApiKey({
+          cfg: makeCfg(marker),
+          provider: "google",
+          modelApi: "google-generative-ai",
+          baseUrl: "https://aiplatform.googleapis.com",
+          env,
+        }),
+      ).toBeNull();
+      // ...but a genuine Gemini-API request (non-Vertex base URL) still resolves the
+      // AI Studio key.
+      expect(
+        resolveUsableCustomProviderApiKey({
+          cfg: makeCfg(marker),
+          provider: "google",
+          modelApi: "google-generative-ai",
+          baseUrl: "https://generativelanguage.googleapis.com",
+          env,
+        })?.apiKey,
+      ).toBe(env[marker]);
+    }
+  });
+
+  it("preserves a Vertex Express key under the google provider for a Vertex model", () => {
+    // A literal value and the GOOGLE_CLOUD_API_KEY Vertex key marker are legitimate
+    // Vertex Express credentials that the Vertex transport accepts, so they are
+    // preserved for a Vertex request even under the generic "google" provider id.
+    const env = { GOOGLE_CLOUD_API_KEY: "vertex-express-key" } as NodeJS.ProcessEnv; // pragma: allowlist secret
+    const makeCfg = (apiKey: string) => ({
+      models: {
+        providers: {
+          google: {
+            baseUrl: "https://aiplatform.googleapis.com",
+            apiKey,
+            models: [
+              {
+                id: "gemini-2.5-flash",
+                name: "Gemini 2.5 Flash",
+                api: "google-vertex" as const,
+                reasoning: false,
+                input: ["text" as const],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 4096,
+              },
+            ],
+          },
+        },
+      },
+    });
+    // Literal Vertex Express key.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: makeCfg("vertex-express-literal"), // pragma: allowlist secret
+        provider: "google",
+        modelApi: "google-vertex",
+        env,
+      }),
+    ).toEqual({ apiKey: "vertex-express-literal", source: "models.json" });
+    // GOOGLE_CLOUD_API_KEY (Vertex key) marker.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: makeCfg("GOOGLE_CLOUD_API_KEY"),
+        provider: "google",
+        modelApi: "google-vertex",
+        env,
+      })?.apiKey,
+    ).toBe("vertex-express-key");
+  });
+
+  it("keeps a literal Vertex express key under a dedicated provider for a Vertex model", () => {
+    // A dedicated Vertex provider id carries a legitimate Vertex express API key,
+    // so a literal key there is preserved for a Vertex request (only the generic
+    // "google" provider's keys are treated as Gemini credentials).
+    const resolved = resolveUsableCustomProviderApiKey({
+      cfg: {
+        models: {
+          providers: {
+            "google-vertex": {
+              baseUrl: "https://aiplatform.googleapis.com",
+              api: "google-vertex" as const,
+              apiKey: "vertex-express-literal-key", // pragma: allowlist secret
+              models: [],
+            },
+          },
+        },
+      },
+      provider: "google-vertex",
+      modelApi: "google-vertex",
+    });
+    expect(resolved).toEqual({
+      apiKey: "vertex-express-literal-key",
+      source: "models.json",
+    });
+  });
+
+  it("passes the Vertex ADC marker through when api is set at the provider level", () => {
+    const resolved = resolveUsableCustomProviderApiKey({
+      cfg: {
+        models: {
+          providers: {
+            "google-vertex": {
+              baseUrl: "https://aiplatform.googleapis.com",
+              api: "google-vertex",
+              apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+              models: [],
+            },
+          },
+        },
+      },
+      provider: "google-vertex",
+    });
+    expect(resolved).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+  });
+
+  it("does not pass a provider-level Vertex marker to model-agnostic google callers", () => {
+    // The generic "google" provider is shared with the Gemini image/video/music
+    // generation SDKs, which resolve `provider: "google"` without a model api and
+    // then send Gemini Generative Language requests. Even when that shared provider
+    // is declared with provider-level api "google-vertex", the marker must not be
+    // returned to a model-agnostic caller, or it would be sent as x-goog-api-key.
+    const cfg = {
+      models: {
+        providers: {
+          google: {
+            baseUrl: "https://aiplatform.googleapis.com",
+            api: "google-vertex" as const,
+            apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+            models: [],
+          },
+        },
+      },
+    };
+    // Model-agnostic caller under the shared "google" id: no marker.
+    expect(resolveUsableCustomProviderApiKey({ cfg, provider: "google" })).toBeNull();
+    // An explicit Vertex model request still resolves the marker.
+    expect(
+      resolveUsableCustomProviderApiKey({ cfg, provider: "google", modelApi: "google-vertex" }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+  });
+
+  // A single "google" provider that mixes Vertex and non-Vertex (Gemini API)
+  // models. The non-secret ADC marker authorizes the Vertex transport only, so
+  // it must be scoped to the selected model and never sent as x-goog-api-key for
+  // a Gemini-API model.
+  const mixedGoogleProviderCfg = {
+    models: {
+      providers: {
+        google: {
+          baseUrl: "https://aiplatform.googleapis.com",
+          apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+          models: [
+            {
+              id: "gemini-2.5-flash-vertex",
+              name: "Gemini 2.5 Flash (Vertex)",
+              api: "google-vertex" as const,
+              reasoning: false,
+              input: ["text" as const],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 8192,
+              maxTokens: 4096,
+            },
+            {
+              id: "gemini-2.5-flash",
+              name: "Gemini 2.5 Flash",
+              api: "google-generative-ai" as const,
+              reasoning: false,
+              input: ["text" as const],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 8192,
+              maxTokens: 4096,
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  it("passes the Vertex ADC marker through for the Vertex model in a mixed provider", () => {
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: mixedGoogleProviderCfg,
+        provider: "google",
+        modelApi: "google-vertex",
+      }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+  });
+
+  it("does not leak the Vertex ADC marker to a non-Vertex model in a mixed provider", () => {
+    // A genuine Gemini-API model (non-Vertex base URL) must not receive the marker.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: mixedGoogleProviderCfg,
+        provider: "google",
+        modelApi: "google-generative-ai",
+        baseUrl: "https://generativelanguage.googleapis.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the Vertex ADC marker for a base-url-routed google-generative-ai model", () => {
+    // A google-generative-ai model routed through Vertex by an aiplatform base URL
+    // is dispatched through the Vertex transport and still needs the ADC marker.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: mixedGoogleProviderCfg,
+        provider: "google",
+        modelApi: "google-generative-ai",
+        baseUrl: "https://us-central1-aiplatform.googleapis.com",
+      }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+  });
+
+  it("does not emit the Vertex ADC marker for a mixed provider when no model is selected", () => {
+    // Model-agnostic callers cannot see the target model, so an ambiguous mixed
+    // provider must not be treated as Vertex-only.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg: mixedGoogleProviderCfg,
+        provider: "google",
+      }),
+    ).toBeNull();
+  });
+
+  it("lets a per-model non-Vertex api override the provider-level google-vertex default", () => {
+    // The selected model API and base URL are authoritative: a model overriding to
+    // the Gemini API AND a non-Vertex base URL must not receive the Vertex ADC
+    // marker even when the provider defaults to api "google-vertex".
+    const cfg = {
+      models: {
+        providers: {
+          "google-vertex": {
+            baseUrl: "https://aiplatform.googleapis.com",
+            api: "google-vertex" as const,
+            apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+            models: [
+              {
+                id: "gemini-2.5-flash",
+                name: "Gemini 2.5 Flash",
+                api: "google-generative-ai" as const,
+                reasoning: false,
+                input: ["text" as const],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 4096,
+              },
+            ],
+          },
+        },
+      },
+    };
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg,
+        provider: "google-vertex",
+        modelApi: "google-generative-ai",
+        baseUrl: "https://generativelanguage.googleapis.com",
+      }),
+    ).toBeNull();
+    // The same Gemini-api model keeps the marker when it stays routed through
+    // Vertex (inherited aiplatform base URL): the transport still needs ADC.
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg,
+        provider: "google-vertex",
+        modelApi: "google-generative-ai",
+      }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+    expect(
+      resolveUsableCustomProviderApiKey({
+        cfg,
+        provider: "google-vertex",
+        modelApi: "google-vertex",
+      }),
+    ).toEqual({
+      apiKey: GCP_VERTEX_CREDENTIALS_MARKER,
+      source: "models.json (vertex adc marker)",
+    });
+  });
+
   it("resolves known env marker names from process env for custom providers", () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "sk-from-env"; // pragma: allowlist secret

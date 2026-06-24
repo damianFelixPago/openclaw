@@ -41,16 +41,50 @@ export type ProviderEnvVarLookupParams = {
   metadataSnapshot?: PluginMetadataSnapshot;
 };
 
-/** Manifest-provided evidence that a provider auth credential exists outside config. */
-export type ProviderAuthEvidence = {
-  type: "local-file-with-env";
-  fileEnvVar?: string;
-  fallbackPaths?: readonly string[];
+/** Fields shared by every provider auth evidence variant. */
+type ProviderAuthEvidenceCommon = {
+  /** At least one of these env vars must be non-empty when provided. */
   requiresAnyEnv?: readonly string[];
+  /** Every env var listed here must be non-empty when provided. */
   requiresAllEnv?: readonly string[];
+  /**
+   * Every env var listed here must be empty/unset for the evidence to hold. Used
+   * to suppress evidence that a more specific credential source preempts (for
+   * example a metadata-server opt-in is invalid when GOOGLE_APPLICATION_CREDENTIALS
+   * points at a credentials file the auth library loads first).
+   */
+  requiresAbsentEnv?: readonly string[];
+  /** Non-secret marker returned when this evidence is present. */
   credentialMarker: string;
+  /** Human-readable auth source label. */
   source?: string;
 };
+
+/**
+ * Manifest-provided evidence that a provider auth credential exists outside
+ * config. Evidence checks must stay cheap and side-effect free: they may read
+ * env metadata and probe local file existence, but must not read secrets, shell
+ * out, or call provider APIs.
+ */
+export type ProviderAuthEvidence =
+  | (ProviderAuthEvidenceCommon & {
+      /** Local credential file gated by required environment metadata. */
+      type: "local-file-with-env";
+      /** Optional env var containing an explicit credential file path. */
+      fileEnvVar?: string;
+      /** Optional fallback credential file paths. Supports `${HOME}`/`${APPDATA}`. */
+      fallbackPaths?: readonly string[];
+    })
+  | (ProviderAuthEvidenceCommon & {
+      /**
+       * Operator opt-in flag asserting ambient credentials are reachable (for
+       * example GCP metadata-server ADC), which cannot be detected synchronously.
+       * The evidence holds when any listed flag env var is truthy.
+       */
+      type: "env-flag";
+      /** Env vars whose truthy value asserts the ambient credential exists. */
+      flagEnvVars: readonly string[];
+    });
 
 /** Provider auth lookup maps resolved from plugin metadata and core fallback rules. */
 export type ProviderAuthLookupMaps = {

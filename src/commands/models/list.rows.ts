@@ -114,7 +114,8 @@ async function buildRow(params: {
     availableKeys: params.context.availableKeys,
     allowProviderAvailabilityFallback,
     hasAuthForProvider: shouldResolveProviderAuth
-      ? (provider) => params.context.authIndex.hasProviderAuth(provider)
+      ? (provider, modelApi, baseUrl) =>
+          params.context.authIndex.hasProviderAuth(provider, modelApi, baseUrl)
       : undefined,
   });
 }
@@ -233,6 +234,7 @@ function toConfiguredProviderListModel(params: {
     input: resolveConfiguredModelInput({ model: params.model }),
     contextWindow: params.model.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
     contextTokens: params.model.contextTokens,
+    api: params.model.api ?? params.providerConfig.api,
   };
 }
 
@@ -245,7 +247,10 @@ function toListRowInput(input: readonly string[] | undefined): ListRowModel["inp
 }
 
 function toManifestCatalogListModel(
-  row: Pick<NormalizedModelCatalogRow, "provider" | "id" | "name" | "baseUrl" | "contextWindow"> & {
+  row: Pick<
+    NormalizedModelCatalogRow,
+    "provider" | "id" | "name" | "baseUrl" | "contextWindow" | "api"
+  > & {
     input?: readonly string[];
   },
 ): ListRowModel {
@@ -256,6 +261,7 @@ function toManifestCatalogListModel(
     baseUrl: row.baseUrl,
     input: toListRowInput(row.input),
     contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+    api: row.api,
   };
 }
 
@@ -395,7 +401,11 @@ export async function appendAuthenticatedCatalogRows(params: {
     metadataSnapshot: params.context.metadataSnapshot,
   });
   for (const entry of catalog) {
-    if (!params.context.authIndex.hasProviderAuth(entry.provider)) {
+    // Catalog entries carry no per-model base URL, so a Vertex-routed
+    // google-generative-ai catalog model is identified by its provider config base
+    // URL; pass it so the auth prefilter does not skip an available Vertex row.
+    const entryBaseUrl = params.context.cfg.models?.providers?.[entry.provider]?.baseUrl;
+    if (!params.context.authIndex.hasProviderAuth(entry.provider, entry.api, entryBaseUrl)) {
       continue;
     }
     const key = modelKey(entry.provider, entry.id);
@@ -591,7 +601,8 @@ export async function appendConfiguredRows(params: {
         availableKeys: params.context.availableKeys,
         allowProviderAvailabilityFallback: allowProviderAvailabilityFallback === true,
         hasAuthForProvider: shouldResolveProviderAuth
-          ? (provider) => params.context.authIndex.hasProviderAuth(provider)
+          ? (provider, modelApi, baseUrl) =>
+              params.context.authIndex.hasProviderAuth(provider, modelApi, baseUrl)
           : undefined,
       }),
     );

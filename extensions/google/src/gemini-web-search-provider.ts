@@ -16,6 +16,15 @@ import {
 
 const GEMINI_CREDENTIAL_PATH = "plugins.entries.google.config.webSearch.apiKey";
 const GOOGLE_PROVIDER_CREDENTIAL_PATH = "models.providers.google.apiKey";
+// The non-secret Vertex ADC marker authorizes the Vertex transport only; it is
+// not a Gemini API key, so it must never be sent as x-goog-api-key to the
+// Generative Language API. Treat it as absent for the Gemini provider fallback.
+const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
+
+function readGoogleProviderGeminiApiKey(provider: Record<string, unknown>): unknown {
+  const apiKey = provider.apiKey;
+  return apiKey === GCP_VERTEX_CREDENTIALS_MARKER ? undefined : apiKey;
+}
 
 type GeminiWebSearchRuntime = typeof import("./gemini-web-search-provider.runtime.js");
 
@@ -80,8 +89,12 @@ function getGoogleModelProviderCredentialFallback(
   config?: OpenClawConfig,
 ): { path: string; value: unknown } | undefined {
   const provider = resolveGoogleModelProviderConfig(config);
-  return provider && provider.apiKey !== undefined
-    ? { path: GOOGLE_PROVIDER_CREDENTIAL_PATH, value: provider.apiKey }
+  if (!provider) {
+    return undefined;
+  }
+  const apiKey = readGoogleProviderGeminiApiKey(provider);
+  return apiKey !== undefined
+    ? { path: GOOGLE_PROVIDER_CREDENTIAL_PATH, value: apiKey }
     : undefined;
 }
 
@@ -90,7 +103,8 @@ function withGoogleModelProviderFallbacks(
   config?: OpenClawConfig,
 ): Record<string, unknown> | undefined {
   const provider = resolveGoogleModelProviderConfig(config);
-  if (!provider || (provider.apiKey === undefined && provider.baseUrl === undefined)) {
+  const providerApiKey = provider ? readGoogleProviderGeminiApiKey(provider) : undefined;
+  if (!provider || (providerApiKey === undefined && provider.baseUrl === undefined)) {
     return searchConfig;
   }
   const gemini = isRecord(searchConfig?.gemini) ? { ...searchConfig.gemini } : {};
@@ -100,8 +114,8 @@ function withGoogleModelProviderFallbacks(
   const geminiDescriptor = searchConfig
     ? Object.getOwnPropertyDescriptor(searchConfig, "gemini")
     : undefined;
-  if (provider.apiKey !== undefined) {
-    gemini.providerApiKey = provider.apiKey;
+  if (providerApiKey !== undefined) {
+    gemini.providerApiKey = providerApiKey;
   }
   if (provider.baseUrl !== undefined) {
     gemini.providerBaseUrl = provider.baseUrl;

@@ -23,6 +23,15 @@ import { registerGoogleProvider } from "./provider-registration.js";
 import { buildGoogleSpeechProvider } from "./speech-provider.js";
 import { createGeminiWebSearchProvider } from "./src/gemini-web-search-provider.js";
 
+// The non-secret Vertex ADC marker authorizes the Vertex transport only; it is
+// not a Gemini API key, so the shared google provider key must not be sent as
+// x-goog-api-key to the realtime Generative Language API.
+const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
+
+function readGoogleProviderGeminiApiKey(value: unknown): unknown {
+  return value === GCP_VERTEX_CREDENTIALS_MARKER ? undefined : value;
+}
+
 let googleImageGenerationProviderPromise: Promise<ImageGenerationProvider> | null = null;
 let googleMediaUnderstandingProviderPromise: Promise<MediaUnderstandingProvider> | null = null;
 let googleMusicGenerationProviderPromise: Promise<MusicGenerationProvider> | null = null;
@@ -155,7 +164,7 @@ function createLazyGoogleMusicGenerationProvider(): MusicGenerationProvider {
   };
 }
 
-function resolveGoogleRealtimeProviderConfig(
+export function resolveGoogleRealtimeProviderConfig(
   rawConfig: RealtimeVoiceProviderConfig,
   cfg?: { models?: { providers?: { google?: { apiKey?: unknown } } } },
 ): RealtimeVoiceProviderConfig {
@@ -174,14 +183,17 @@ function resolveGoogleRealtimeProviderConfig(
           !Array.isArray(rawConfig.google)
         ? (rawConfig.google as Record<string, unknown>)
         : rawConfig;
+  const providerFallbackApiKey = readGoogleProviderGeminiApiKey(
+    cfg?.models?.providers?.google?.apiKey,
+  );
   return {
     ...raw,
     ...(raw.apiKey === undefined
-      ? cfg?.models?.providers?.google?.apiKey === undefined
+      ? providerFallbackApiKey === undefined
         ? {}
         : {
             apiKey: normalizeResolvedSecretInputString({
-              value: cfg.models.providers.google.apiKey,
+              value: providerFallbackApiKey,
               path: "models.providers.google.apiKey",
             }),
           }
@@ -304,7 +316,7 @@ function createLazyGoogleRealtimeVoiceBridge(
   };
 }
 
-function createLazyGoogleRealtimeVoiceProvider(): RealtimeVoiceProviderPlugin {
+export function createLazyGoogleRealtimeVoiceProvider(): RealtimeVoiceProviderPlugin {
   return {
     id: "google",
     label: "Google Live Voice",
@@ -313,7 +325,9 @@ function createLazyGoogleRealtimeVoiceProvider(): RealtimeVoiceProviderPlugin {
     isConfigured: ({ cfg, providerConfig }) =>
       Boolean(
         normalizeOptionalString(providerConfig.apiKey) ??
-        normalizeOptionalString(cfg?.models?.providers?.google?.apiKey) ??
+        normalizeOptionalString(
+          readGoogleProviderGeminiApiKey(cfg?.models?.providers?.google?.apiKey),
+        ) ??
         resolveGoogleRealtimeEnvApiKey(),
       ),
     createBridge: createLazyGoogleRealtimeVoiceBridge,

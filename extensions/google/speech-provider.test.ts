@@ -391,6 +391,49 @@ describe("Google speech provider", () => {
     expect(new Headers(request.headers).get("x-goog-api-key")).toBe("env-google-key");
   });
 
+  it("treats the Vertex ADC marker in the google model provider as no TTS key", () => {
+    vi.stubEnv("GEMINI_API_KEY", "");
+    vi.stubEnv("GOOGLE_API_KEY", "");
+    const provider = buildGoogleSpeechProvider();
+    // The non-secret Vertex ADC marker is not a Gemini API key, so it must not be
+    // sent as x-goog-api-key; TTS reports unconfigured rather than using it.
+    expect(
+      provider.isConfigured({
+        cfg: {
+          models: {
+            providers: {
+              google: {
+                apiKey: "gcp-vertex-credentials",
+                baseUrl: "https://generativelanguage.googleapis.com",
+                models: [],
+              },
+            },
+          },
+        },
+        providerConfig: {},
+        timeoutMs: 1,
+      }),
+    ).toBe(false);
+    // A real key under the same provider still configures TTS.
+    expect(
+      provider.isConfigured({
+        cfg: {
+          models: {
+            providers: {
+              google: {
+                apiKey: "AIza-real",
+                baseUrl: "https://generativelanguage.googleapis.com",
+                models: [],
+              },
+            },
+          },
+        },
+        providerConfig: {},
+        timeoutMs: 1,
+      }),
+    ).toBe(true);
+  });
+
   it("can reuse a configured Google model-provider API key without auth profiles", async () => {
     const requestMock = installGoogleTtsRequestMock();
     const provider = buildGoogleSpeechProvider();

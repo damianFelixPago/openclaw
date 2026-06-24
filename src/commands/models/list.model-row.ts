@@ -12,10 +12,22 @@ export type ListRowModel = {
   baseUrl?: string;
   contextWindow?: number | null;
   contextTokens?: number | null;
+  /** Model API surface (e.g. "google-vertex"), used to scope provider-auth fallbacks. */
+  api?: string;
 };
 
-/** Provider-auth predicate used when model-level availability is unavailable. */
-export type ModelAuthAvailabilityResolver = (provider: string) => boolean;
+/**
+ * Provider-auth predicate used when model-level availability is unavailable.
+ * `modelApi` and `baseUrl` let the resolver mirror model-scoped auth fallbacks
+ * (e.g. a Vertex model registered under the shared "google" provider, or a
+ * `google-generative-ai` model routed through Vertex by an aiplatform base URL,
+ * resolving "google-vertex" auth).
+ */
+export type ModelAuthAvailabilityResolver = (
+  provider: string,
+  modelApi?: string,
+  baseUrl?: string,
+) => boolean;
 
 /** Builds a display row, preserving configured tags and alias metadata. */
 export function toModelRow(params: {
@@ -57,7 +69,8 @@ export function toModelRow(params: {
   const available =
     availableKeys !== undefined && !allowProviderAvailabilityFallback
       ? modelIsAvailable
-      : modelIsAvailable || (params.hasAuthForProvider?.(model.provider) ?? false);
+      : modelIsAvailable ||
+        (params.hasAuthForProvider?.(model.provider, model.api, model.baseUrl) ?? false);
   const aliasTags = aliases.length > 0 ? [`alias:${aliases.join(",")}`] : [];
   const mergedTags = new Set(tags);
   if (aliasTags.length > 0) {

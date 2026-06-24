@@ -6,6 +6,7 @@ import os from "node:os";
 import { normalizeProviderIdForAuth } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalString as normalizeOptionalPathInput } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import { getShellEnvAppliedKeys } from "../infra/shell-env.js";
 import { resolvePluginSetupProvider } from "../plugins/setup-registry.js";
 import type { ProviderAuthEvidence } from "../secrets/provider-env-vars.js";
@@ -53,10 +54,16 @@ function hasRequiredAuthEvidenceEnv(
   if (evidence.requiresAllEnv?.length && !evidence.requiresAllEnv.every(hasEnv)) {
     return false;
   }
+  if (evidence.requiresAbsentEnv?.length && evidence.requiresAbsentEnv.some(hasEnv)) {
+    return false;
+  }
   return true;
 }
 
-function hasLocalFileAuthEvidence(evidence: ProviderAuthEvidence, env: NodeJS.ProcessEnv): boolean {
+function hasLocalFileAuthEvidence(
+  evidence: Extract<ProviderAuthEvidence, { type: "local-file-with-env" }>,
+  env: NodeJS.ProcessEnv,
+): boolean {
   if (evidence.fileEnvVar) {
     const explicitPath = normalizeOptionalPathInput(env[evidence.fileEnvVar]);
     if (explicitPath) {
@@ -72,21 +79,39 @@ function hasLocalFileAuthEvidence(evidence: ProviderAuthEvidence, env: NodeJS.Pr
   return false;
 }
 
+function hasEnvFlagAuthEvidence(
+  evidence: Extract<ProviderAuthEvidence, { type: "env-flag" }>,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return evidence.flagEnvVars.some((flagEnvVar) => isTruthyEnvValue(env[flagEnvVar]));
+}
+
 function resolveAuthEvidence(
   evidence: readonly ProviderAuthEvidence[] | undefined,
   env: NodeJS.ProcessEnv,
 ): EnvApiKeyResult | null {
   for (const entry of evidence ?? []) {
-    if (entry.type !== "local-file-with-env") {
+    if (!hasRequiredAuthEvidenceEnv(entry, env)) {
       continue;
     }
-    if (!hasRequiredAuthEvidenceEnv(entry, env) || !hasLocalFileAuthEvidence(entry, env)) {
-      continue;
+    if (entry.type === "local-file-with-env") {
+      if (!hasLocalFileAuthEvidence(entry, env)) {
+        continue;
+      }
+      return {
+        apiKey: entry.credentialMarker,
+        source: entry.source ?? "local auth evidence",
+      };
     }
-    return {
-      apiKey: entry.credentialMarker,
-      source: entry.source ?? "local auth evidence",
-    };
+    if (entry.type === "env-flag") {
+      if (!hasEnvFlagAuthEvidence(entry, env)) {
+        continue;
+      }
+      return {
+        apiKey: entry.credentialMarker,
+        source: entry.source ?? "env flag auth evidence",
+      };
+    }
   }
   return null;
 }

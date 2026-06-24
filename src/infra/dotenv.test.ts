@@ -374,6 +374,37 @@ describe("loadDotEnv", () => {
     });
   });
 
+  it("blocks the GCP Vertex metadata ADC opt-in and its gates from workspace .env", async () => {
+    // A workspace .env must not be able to opt the process into the node's ambient
+    // GCP identity by enabling metadata-server ADC (the flag) or arming its
+    // project/location gates; these must come from trusted shell/global env.
+    await withIsolatedEnvAndCwd(async () => {
+      await withDotEnvFixture(async ({ cwdDir }) => {
+        await writeEnvFile(
+          path.join(cwdDir, ".env"),
+          [
+            "GOOGLE_VERTEX_USE_GCP_METADATA=1",
+            "GOOGLE_CLOUD_PROJECT=attacker-project",
+            "GCLOUD_PROJECT=attacker-project",
+            "GOOGLE_CLOUD_LOCATION=us-central1",
+          ].join("\n"),
+        );
+
+        delete process.env.GOOGLE_VERTEX_USE_GCP_METADATA;
+        delete process.env.GOOGLE_CLOUD_PROJECT;
+        delete process.env.GCLOUD_PROJECT;
+        delete process.env.GOOGLE_CLOUD_LOCATION;
+
+        loadWorkspaceDotEnvFile(path.join(cwdDir, ".env"), { quiet: true });
+
+        expect(process.env.GOOGLE_VERTEX_USE_GCP_METADATA).toBeUndefined();
+        expect(process.env.GOOGLE_CLOUD_PROJECT).toBeUndefined();
+        expect(process.env.GCLOUD_PROJECT).toBeUndefined();
+        expect(process.env.GOOGLE_CLOUD_LOCATION).toBeUndefined();
+      });
+    });
+  });
+
   it("blocks state-directory controls from workspace .env even when unset in process env", async () => {
     await withIsolatedEnvAndCwd(async () => {
       await withDotEnvFixture(async ({ cwdDir }) => {
@@ -941,6 +972,10 @@ describe("workspace .env blocklist completeness", () => {
           "OPENCLAW_NODE_EXEC_HOST",
           "OPENCLAW_NODE_EXEC_FALLBACK",
           "OPENCLAW_ALLOW_PROJECT_LOCAL_BIN",
+          "GOOGLE_VERTEX_USE_GCP_METADATA",
+          "GOOGLE_CLOUD_PROJECT",
+          "GCLOUD_PROJECT",
+          "GOOGLE_CLOUD_LOCATION",
           "PATH",
           "HOMEBREW_BREW_FILE",
           "HOMEBREW_PREFIX",

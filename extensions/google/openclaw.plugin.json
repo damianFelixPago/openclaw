@@ -605,14 +605,40 @@
           {
             "type": "local-file-with-env",
             "fileEnvVar": "GOOGLE_APPLICATION_CREDENTIALS",
+            "requiresAnyEnv": ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"],
+            "requiresAllEnv": ["GOOGLE_CLOUD_LOCATION"],
+            "credentialMarker": "gcp-vertex-credentials",
+            "source": "gcloud adc"
+          },
+          {
+            "type": "local-file-with-env",
+            "fileEnvVar": "google_application_credentials",
+            "requiresAnyEnv": ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"],
+            "requiresAllEnv": ["GOOGLE_CLOUD_LOCATION"],
+            "requiresAbsentEnv": ["GOOGLE_APPLICATION_CREDENTIALS"],
+            "credentialMarker": "gcp-vertex-credentials",
+            "source": "gcloud adc"
+          },
+          {
+            "type": "local-file-with-env",
             "fallbackPaths": [
               "${HOME}/.config/gcloud/application_default_credentials.json",
               "${APPDATA}/gcloud/application_default_credentials.json"
             ],
             "requiresAnyEnv": ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"],
             "requiresAllEnv": ["GOOGLE_CLOUD_LOCATION"],
+            "requiresAbsentEnv": ["GOOGLE_APPLICATION_CREDENTIALS", "google_application_credentials"],
             "credentialMarker": "gcp-vertex-credentials",
             "source": "gcloud adc"
+          },
+          {
+            "type": "env-flag",
+            "flagEnvVars": ["GOOGLE_VERTEX_USE_GCP_METADATA"],
+            "requiresAnyEnv": ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"],
+            "requiresAllEnv": ["GOOGLE_CLOUD_LOCATION"],
+            "requiresAbsentEnv": ["GOOGLE_APPLICATION_CREDENTIALS", "google_application_credentials"],
+            "credentialMarker": "gcp-vertex-credentials",
+            "source": "gcp metadata adc"
           }
         ]
       },

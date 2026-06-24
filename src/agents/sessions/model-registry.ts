@@ -4,6 +4,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { normalizeProviderIdForAuth } from "@openclaw/model-catalog-core/provider-id";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -23,6 +24,7 @@ import { registerOAuthProvider, resetOAuthProviders } from "../../llm/utils/oaut
 import type { OAuthProviderInterface } from "../../llm/utils/oauth/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getAgentDir } from "../config.js";
+import { isGoogleVertexBaseUrl } from "../model-auth.js";
 import { resolveModelPluginMetadataSnapshot } from "../model-discovery-context.js";
 import {
   filterGeneratedPluginModelCatalogProviders,
@@ -594,11 +596,56 @@ export class ModelRegistry {
    * Get API key for a model.
    */
   hasConfiguredAuth(model: Model): boolean {
-    return (
+    // A Vertex model registered under the shared "google" provider must not be
+    // considered authenticated by that provider's AI Studio (Gemini) auth-storage
+    // credential, which the Vertex transport rejects. An explicitly configured
+    // models.json provider-level apiKey (a Vertex Express key / GOOGLE_CLOUD_API_KEY
+    // / ADC marker) or the dedicated "google-vertex" provider (ADC marker /
+    // metadata) does satisfy it, mirroring the model-scoped availability path.
+    if (this.isVertexModelUnderGenericGoogle(model)) {
+      return (
+        this.providerRequestConfigs.get(model.provider)?.auth === "aws-sdk" ||
+        this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined ||
+        this.authStorage.hasAuth("google-vertex")
+      );
+    }
+    if (
       this.authStorage.hasAuth(model.provider) ||
       this.providerRequestConfigs.get(model.provider)?.auth === "aws-sdk" ||
       this.providerRequestConfigs.get(model.provider)?.apiKey !== undefined
+    ) {
+      return true;
+    }
+    // A Vertex model can also be registered under a custom (non-"google") provider
+    // id yet resolve auth via the dedicated "google-vertex" provider
+    // (metadata-server/ADC). Mirror that fallback so it is not filtered out of
+    // session availability.
+    if (this.isVertexRoutedModel(model)) {
+      return this.authStorage.hasAuth("google-vertex");
+    }
+    return false;
+  }
+
+  /**
+   * True when a Vertex model (`api === "google-vertex"`) is registered under the
+   * shared generic "google" provider id rather than a dedicated Vertex provider.
+   * Such a model resolves its credential from the "google-vertex" provider, never
+   * from the "google" provider's AI Studio (Gemini) key.
+   */
+  private isVertexModelUnderGenericGoogle(model: Model): boolean {
+    return (
+      this.isVertexRoutedModel(model) && normalizeProviderIdForAuth(model.provider) === "google"
     );
+  }
+
+  /**
+   * True when a model is dispatched through the GCP Vertex transport, either by its
+   * per-model api (`google-vertex`) or by an `aiplatform.googleapis.com` base URL on
+   * an otherwise `google-generative-ai` model. Vertex credential resolution applies
+   * identically to both.
+   */
+  private isVertexRoutedModel(model: Model): boolean {
+    return model.api === "google-vertex" || isGoogleVertexBaseUrl(model.baseUrl);
   }
 
   private getModelRequestKey(provider: string, modelId: string): string {
@@ -646,19 +693,55 @@ export class ModelRegistry {
     try {
       const providerConfig = this.providerRequestConfigs.get(model.provider);
       const usesAwsSdkAuth = providerConfig?.auth === "aws-sdk";
-      const apiKeyFromAuthStorage = usesAwsSdkAuth
-        ? undefined
-        : await this.authStorage.getApiKey(model.provider, {
-            includeFallback: false,
-          });
-      const apiKey =
-        apiKeyFromAuthStorage ??
-        (!usesAwsSdkAuth && providerConfig?.apiKey
-          ? resolveConfigValueOrThrow(
-              providerConfig.apiKey,
-              `API key for provider "${model.provider}"`,
-            )
-          : undefined);
+      let apiKey: string | undefined;
+      if (this.isVertexModelUnderGenericGoogle(model)) {
+        // A Vertex model under the shared "google" provider must never dispatch
+        // with that provider's AI Studio (Gemini) credential from auth storage —
+        // the Vertex transport rejects it. A models.json provider-level apiKey is
+        // different: it is an explicitly configured Vertex credential (literal
+        // Vertex Express key, GOOGLE_CLOUD_API_KEY, or the ADC marker) and is
+        // honored. Otherwise resolve the dedicated "google-vertex" credential (ADC
+        // marker / metadata), mirroring the model-scoped availability/listing path.
+        const configuredApiKey =
+          !usesAwsSdkAuth && providerConfig?.apiKey
+            ? resolveConfigValueOrThrow(
+                providerConfig.apiKey,
+                `API key for provider "${model.provider}"`,
+              )
+            : undefined;
+        apiKey =
+          configuredApiKey ??
+          (usesAwsSdkAuth
+            ? undefined
+            : await this.authStorage.getApiKey("google-vertex", { includeFallback: false }));
+      } else {
+        const apiKeyFromAuthStorage = usesAwsSdkAuth
+          ? undefined
+          : await this.authStorage.getApiKey(model.provider, {
+              includeFallback: false,
+            });
+        apiKey =
+          apiKeyFromAuthStorage ??
+          (!usesAwsSdkAuth && providerConfig?.apiKey
+            ? resolveConfigValueOrThrow(
+                providerConfig.apiKey,
+                `API key for provider "${model.provider}"`,
+              )
+            : undefined);
+        // A Vertex model registered under a custom (non-Vertex) provider id resolves
+        // its credential from the dedicated "google-vertex" provider when the custom
+        // provider has no key of its own. Mirror the hasConfiguredAuth() fallback so
+        // a model reported as available also dispatches with the right auth instead
+        // of failing with "no API key".
+        if (
+          !apiKey &&
+          !usesAwsSdkAuth &&
+          this.isVertexRoutedModel(model) &&
+          model.provider !== "google-vertex"
+        ) {
+          apiKey = await this.authStorage.getApiKey("google-vertex", { includeFallback: false });
+        }
+      }
 
       const providerHeaders = resolveHeadersOrThrow(
         providerConfig?.headers,

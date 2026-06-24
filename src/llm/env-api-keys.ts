@@ -127,8 +127,13 @@ function hasVertexAdcCredentials(): boolean {
       return false;
     }
 
-    // Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
-    const gacPath = getEnvValue("GOOGLE_APPLICATION_CREDENTIALS");
+    // google-auth-library reads GOOGLE_APPLICATION_CREDENTIALS || its lowercase
+    // variant and never falls back to the default ADC path when either is set, so
+    // an explicit (even broken) path is authoritative and must not be masked by a
+    // present default ADC file.
+    const gacPath =
+      getEnvValue("GOOGLE_APPLICATION_CREDENTIALS") ||
+      getEnvValue("google_application_credentials");
     if (gacPath) {
       cachedVertexAdcCredentialsExists = nodeExistsSync(gacPath) ? true : null;
     } else {
@@ -141,6 +146,41 @@ function hasVertexAdcCredentials(): boolean {
     }
   }
   return cachedVertexAdcCredentialsExists === true;
+}
+
+// Non-secret marker that signals Google Vertex Application Default Credentials.
+// The Google Vertex transport treats this (or undefined) as ADC and resolves a
+// bearer token; any other value is sent as a literal `x-goog-api-key`.
+const GOOGLE_VERTEX_ADC_CREDENTIAL_MARKER = "gcp-vertex-credentials";
+
+function isTruthyFlagValue(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "on":
+    case "true":
+    case "yes":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * True when the deployment opts into GCP metadata-server ADC for Vertex (e.g. GKE
+ * Workload Identity) via GOOGLE_VERTEX_USE_GCP_METADATA. A configured ADC key file
+ * (GOOGLE_APPLICATION_CREDENTIALS, either casing) takes precedence and disables this
+ * path so a stale file cannot silently preempt the metadata server.
+ */
+function hasVertexMetadataServerAdc(): boolean {
+  if (!isTruthyFlagValue(getEnvValue("GOOGLE_VERTEX_USE_GCP_METADATA"))) {
+    return false;
+  }
+  return !(
+    getEnvValue("GOOGLE_APPLICATION_CREDENTIALS") || getEnvValue("google_application_credentials")
+  );
 }
 
 function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
@@ -224,16 +264,23 @@ export function getEnvApiKey(provider: string): string | undefined {
   }
 
   // Vertex AI supports either an explicit API key or Application Default Credentials.
-  // Auth is configured via `gcloud auth application-default login`.
+  // Auth is configured via `gcloud auth application-default login`, or, on GCP
+  // compute (e.g. GKE Workload Identity), the metadata server when the deployment
+  // opts in with GOOGLE_VERTEX_USE_GCP_METADATA and no ADC key file is present.
   if (provider === "google-vertex") {
-    const hasCredentials = hasVertexAdcCredentials();
+    const hasCredentials = hasVertexAdcCredentials() || hasVertexMetadataServerAdc();
     const hasProject = Boolean(
       getEnvValue("GOOGLE_CLOUD_PROJECT") || getEnvValue("GCLOUD_PROJECT"),
     );
     const hasLocation = Boolean(getEnvValue("GOOGLE_CLOUD_LOCATION"));
 
     if (hasCredentials && hasProject && hasLocation) {
-      return "<authenticated>";
+      // Return the Vertex ADC marker (not a literal key): the Google Vertex
+      // transport recognizes it and resolves a bearer token via
+      // google-auth-library, whereas any other value is sent verbatim as
+      // `x-goog-api-key`. This is the same non-secret marker the config-key
+      // resolver emits for ADC.
+      return GOOGLE_VERTEX_ADC_CREDENTIAL_MARKER;
     }
   }
 

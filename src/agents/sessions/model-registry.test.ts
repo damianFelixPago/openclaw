@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { withEnvAsync } from "../../test-utils/env.js";
 import {
   PLUGIN_MODEL_CATALOG_FILE,
   PLUGIN_MODEL_CATALOG_GENERATED_BY,
@@ -128,6 +129,161 @@ describe("ModelRegistry models.json auth", () => {
       source: "models_json_key",
       label: "aws-sdk",
     });
+  });
+
+  it("treats a Vertex model under the google provider as available via google-vertex auth", async () => {
+    // A Vertex model can be registered under the shared "google" provider yet have
+    // its credentials keyed under the dedicated "google-vertex" provider (e.g. GKE
+    // metadata-server ADC). Both hasConfiguredAuth() (availability) and
+    // getApiKeyAndHeaders() (request auth) must mirror that fallback so an
+    // advertised model also dispatches with the right credential.
+    const modelsPath = writeModelsJson({
+      providers: {
+        google: {
+          baseUrl: "https://aiplatform.googleapis.com",
+          api: "google-vertex",
+          // No literal/provider apiKey: auth resolves via the google-vertex provider.
+          auth: "oauth",
+          models: [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }],
+        },
+      },
+    });
+
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: undefined,
+        GOOGLE_CLOUD_PROJECT: undefined,
+        GCLOUD_PROJECT: undefined,
+        GOOGLE_CLOUD_LOCATION: undefined,
+        GOOGLE_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+      },
+      async () => {
+        const withVertexAuth = ModelRegistry.create(
+          AuthStorage.inMemory({ "google-vertex": { type: "api_key", key: "vertex-adc" } }),
+          modelsPath,
+        );
+        const model = withVertexAuth.find("google", "gemini-2.5-flash");
+        expect(withVertexAuth.getError()).toBeUndefined();
+        expect(model).toBeDefined();
+        expect(withVertexAuth.getAvailable()).toEqual([model]);
+        // Request auth resolves the google-vertex credential, not "no API key".
+        await expect(withVertexAuth.getApiKeyAndHeaders(model!)).resolves.toEqual({
+          ok: true,
+          apiKey: "vertex-adc",
+          headers: undefined,
+        });
+
+        const withoutVertexAuth = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+        expect(withoutVertexAuth.getAvailable()).toEqual([]);
+      },
+    );
+  });
+
+  it("does not let a Gemini key under the google provider satisfy or dispatch a Vertex model", async () => {
+    // A Vertex model (api: "google-vertex") registered under the shared "google"
+    // provider must never be authenticated or dispatched with the "google"
+    // provider's AI Studio (Gemini) credential — the Vertex transport rejects it.
+    // Only the dedicated "google-vertex" provider satisfies a Vertex request,
+    // mirroring the model-scoped availability/listing path.
+    const modelsPath = writeModelsJson({
+      providers: {
+        google: {
+          baseUrl: "https://aiplatform.googleapis.com",
+          api: "google-vertex",
+          auth: "oauth",
+          models: [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }],
+        },
+      },
+    });
+
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: undefined,
+        GOOGLE_CLOUD_PROJECT: undefined,
+        GCLOUD_PROJECT: undefined,
+        GOOGLE_CLOUD_LOCATION: undefined,
+        GOOGLE_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+      },
+      async () => {
+        // Only a Gemini key under "google" — no google-vertex auth.
+        const geminiOnly = ModelRegistry.create(
+          AuthStorage.inMemory({ google: { type: "api_key", key: "gemini-key" } }),
+          modelsPath,
+        );
+        const model = geminiOnly.find("google", "gemini-2.5-flash");
+        expect(geminiOnly.getError()).toBeUndefined();
+        expect(model).toBeDefined();
+        // Not available: the Gemini key cannot satisfy a Vertex model.
+        expect(geminiOnly.getAvailable()).toEqual([]);
+        // Request auth must not leak the Gemini key to the Vertex transport.
+        await expect(geminiOnly.getApiKeyAndHeaders(model!)).resolves.toEqual({
+          ok: true,
+          apiKey: undefined,
+          headers: undefined,
+        });
+
+        // With both a Gemini key under "google" and dedicated google-vertex auth,
+        // dispatch uses the Vertex credential, never the Gemini key.
+        const both = ModelRegistry.create(
+          AuthStorage.inMemory({
+            google: { type: "api_key", key: "gemini-key" },
+            "google-vertex": { type: "api_key", key: "vertex-adc" },
+          }),
+          modelsPath,
+        );
+        const bothModel = both.find("google", "gemini-2.5-flash");
+        expect(both.getAvailable()).toEqual([bothModel]);
+        await expect(both.getApiKeyAndHeaders(bothModel!)).resolves.toEqual({
+          ok: true,
+          apiKey: "vertex-adc",
+          headers: undefined,
+        });
+      },
+    );
+  });
+
+  it("honors a configured Vertex key on a google provider declared as google-vertex", async () => {
+    // A models.json provider literally named "google" may declare api:
+    // "google-vertex" and supply its own apiKey (a literal Vertex Express key,
+    // GOOGLE_CLOUD_API_KEY, or the ADC marker). That configured key is a legitimate
+    // Vertex credential and must satisfy availability and dispatch even without a
+    // separate google-vertex auth-storage credential.
+    const modelsPath = writeModelsJson({
+      providers: {
+        google: {
+          baseUrl: "https://aiplatform.googleapis.com",
+          api: "google-vertex",
+          apiKey: "vertex-express-key",
+          models: [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }],
+        },
+      },
+    });
+
+    await withEnvAsync(
+      {
+        GOOGLE_VERTEX_USE_GCP_METADATA: undefined,
+        GOOGLE_CLOUD_PROJECT: undefined,
+        GCLOUD_PROJECT: undefined,
+        GOOGLE_CLOUD_LOCATION: undefined,
+        GOOGLE_API_KEY: undefined,
+        GEMINI_API_KEY: undefined,
+      },
+      async () => {
+        // No google-vertex auth storage: the configured provider key is the source.
+        const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+        const model = registry.find("google", "gemini-2.5-flash");
+        expect(registry.getError()).toBeUndefined();
+        expect(model).toBeDefined();
+        expect(registry.getAvailable()).toEqual([model]);
+        await expect(registry.getApiKeyAndHeaders(model!)).resolves.toEqual({
+          ok: true,
+          apiKey: "vertex-express-key",
+          headers: undefined,
+        });
+      },
+    );
   });
 
   it("still rejects api-key custom models without apiKey", () => {

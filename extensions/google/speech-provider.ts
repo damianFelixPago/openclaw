@@ -24,6 +24,10 @@ const GOOGLE_TTS_SAMPLE_RATE = 24_000;
 const GOOGLE_TTS_CHANNELS = 1;
 const GOOGLE_TTS_BITS_PER_SAMPLE = 16;
 const GOOGLE_AUDIO_PROFILE_PROMPT_TEMPLATE = "audio-profile-v1";
+// The non-secret Vertex ADC marker authorizes the Vertex transport only; it is
+// not a Gemini API key, so the shared google provider key must not be sent as
+// x-goog-api-key to the Generative Language API for TTS.
+const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
 
 const GOOGLE_TTS_MODELS = [
   "gemini-3.1-flash-tts-preview",
@@ -162,10 +166,11 @@ function resolveGoogleTtsEnvApiKey(): string | undefined {
 }
 
 function resolveGoogleTtsModelProviderApiKey(cfg?: OpenClawConfig): string | undefined {
-  return normalizeResolvedSecretInputString({
+  const resolved = normalizeResolvedSecretInputString({
     value: cfg?.models?.providers?.google?.apiKey,
     path: "models.providers.google.apiKey",
   });
+  return resolved === GCP_VERTEX_CREDENTIALS_MARKER ? undefined : resolved;
 }
 
 function resolveGoogleTtsApiKey(params: {

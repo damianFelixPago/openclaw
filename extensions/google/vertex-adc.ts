@@ -9,6 +9,7 @@ import {
   resolveExpiresAtMsFromDurationMs,
   resolveExpiresAtMsFromDurationSeconds,
 } from "openclaw/plugin-sdk/number-runtime";
+import { isTruthyEnvValue } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 type GoogleAuthorizedUserCredentials = {
@@ -112,10 +113,53 @@ function hasGoogleVertexLocationEnv(env: NodeJS.ProcessEnv): boolean {
   return Boolean(normalizeOptionalString(env.GOOGLE_CLOUD_LOCATION));
 }
 
+/**
+ * Metadata-server ADC (GKE Workload Identity, Compute Engine, Cloud Run, App
+ * Engine) exposes no credentials file, so it cannot be detected synchronously
+ * the way file-based ADC can. The metadata server is only reachable over the
+ * network, which `google-auth-library` probes asynchronously at request time.
+ *
+ * To let the synchronous catalog-auth resolver recognize this production mode,
+ * we honor an explicit opt-in env var, mirroring the sibling Anthropic Vertex
+ * provider's `ANTHROPIC_VERTEX_USE_GCP_METADATA` switch. Operators running on
+ * GCP metadata-server ADC set `GOOGLE_VERTEX_USE_GCP_METADATA` to any truthy
+ * value (`true`, `1`, `yes`, `on`); the actual credential is still resolved (and
+ * validated) asynchronously by the Vertex transport. The truthy parsing is shared
+ * with the `env-flag` auth-evidence path so both agree on the documented values.
+ *
+ * The opt-in is only honored when no explicit credentials file is configured:
+ * `google-auth-library` loads `GOOGLE_APPLICATION_CREDENTIALS` (or its lowercase
+ * `google_application_credentials` variant) before probing the metadata server and
+ * throws on a missing/invalid path instead of falling through, so accepting the
+ * metadata flag in that case would report Vertex as usable while the real request
+ * still fails. When the file env points at a valid credentials file, file-based
+ * ADC (handled separately) is the actual source.
+ */
+function hasGoogleApplicationCredentialsEnv(env: NodeJS.ProcessEnv): boolean {
+  // google-auth-library reads either casing, so either one preempts metadata ADC.
+  return Boolean(
+    normalizeOptionalString(env.GOOGLE_APPLICATION_CREDENTIALS) ??
+    normalizeOptionalString(env.google_application_credentials),
+  );
+}
+
+function hasGoogleVertexMetadataServerAdc(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!isTruthyEnvValue(env.GOOGLE_VERTEX_USE_GCP_METADATA)) {
+    return false;
+  }
+  return !hasGoogleApplicationCredentialsEnv(env);
+}
+
 function resolveGoogleApplicationCredentialsPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  const explicit = normalizeOptionalString(env.GOOGLE_APPLICATION_CREDENTIALS);
+  // google-auth-library reads GOOGLE_APPLICATION_CREDENTIALS || its lowercase
+  // variant and never falls back to the default ADC path when either is set, so an
+  // explicit (even broken) path is authoritative and must not be masked by a
+  // present default ADC file.
+  const explicit =
+    normalizeOptionalString(env.GOOGLE_APPLICATION_CREDENTIALS) ??
+    normalizeOptionalString(env.google_application_credentials);
   if (explicit) {
     return existsSync(explicit) ? explicit : undefined;
   }
@@ -185,9 +229,10 @@ function readGoogleAdcCredentialsTypeSync(credentialsPath: string): string | und
  *   2. `external_account` credentials file (Workload Identity Federation).
  *   3. `service_account` credentials file (raw GSA key - rarely used in
  *      OpenClaw, included for completeness).
- * Metadata-server ADC is intentionally not detected here: `google-auth-library`
- * probes the default metadata hosts asynchronously at request time, and the
- * provider wires the Vertex transport without this sync predicate.
+ * Metadata-server ADC is not detected by this file-based predicate; it is
+ * covered separately by `hasGoogleVertexMetadataServerAdc` (an explicit opt-in)
+ * because `google-auth-library` only probes the metadata hosts asynchronously
+ * at request time.
  */
 export function hasGoogleVertexAuthorizedUserAdcSync(
   env: NodeJS.ProcessEnv = process.env,
@@ -207,7 +252,7 @@ export function resolveGoogleVertexConfigApiKey(
 ): string | undefined {
   return hasGoogleVertexProjectEnv(env) &&
     hasGoogleVertexLocationEnv(env) &&
-    hasGoogleVertexAuthorizedUserAdcSync(env)
+    (hasGoogleVertexMetadataServerAdc(env) || hasGoogleVertexAuthorizedUserAdcSync(env))
     ? GCP_VERTEX_CREDENTIALS_MARKER
     : undefined;
 }

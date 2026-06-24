@@ -576,15 +576,25 @@ provider API probes.
 
 Supported evidence entries:
 
-| Field              | Required | Type       | What it means                                                                                                  |
-| ------------------ | -------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
-| `type`             | Yes      | `string`   | Currently `local-file-with-env`.                                                                               |
-| `fileEnvVar`       | No       | `string`   | Env var containing an explicit credential file path.                                                           |
-| `fallbackPaths`    | No       | `string[]` | Local credential file paths checked when `fileEnvVar` is absent or empty. Supports `${HOME}` and `${APPDATA}`. |
-| `requiresAnyEnv`   | No       | `string[]` | At least one listed env var must be non-empty before the evidence is valid.                                    |
-| `requiresAllEnv`   | No       | `string[]` | Every listed env var must be non-empty before the evidence is valid.                                           |
-| `credentialMarker` | Yes      | `string`   | Non-secret marker returned when the evidence is present.                                                       |
-| `source`           | No       | `string`   | User-facing source label for auth/status output.                                                               |
+| Field               | Required | Type       | What it means                                                                                                                |
+| ------------------- | -------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `type`              | Yes      | `string`   | `local-file-with-env` or `env-flag`.                                                                                         |
+| `fileEnvVar`        | No       | `string`   | (`local-file-with-env`) Env var containing an explicit credential file path.                                                 |
+| `fallbackPaths`     | No       | `string[]` | (`local-file-with-env`) Credential file paths checked when `fileEnvVar` is absent or empty. Supports `${HOME}`/`${APPDATA}`. |
+| `flagEnvVars`       | Yes\*    | `string[]` | (`env-flag`) Env vars whose truthy value (`1`/`true`/`yes`/`on`) asserts the ambient credential exists.                      |
+| `requiresAnyEnv`    | No       | `string[]` | At least one listed env var must be non-empty before the evidence is valid.                                                  |
+| `requiresAllEnv`    | No       | `string[]` | Every listed env var must be non-empty before the evidence is valid.                                                         |
+| `requiresAbsentEnv` | No       | `string[]` | Every listed env var must be empty/unset before the evidence is valid (suppresses evidence a more specific source preempts). |
+| `credentialMarker`  | Yes      | `string`   | Non-secret marker returned when the evidence is present.                                                                     |
+| `source`            | No       | `string`   | User-facing source label for auth/status output.                                                                             |
+
+\* Required for `env-flag` entries.
+
+Use `local-file-with-env` for credentials backed by a file on disk. Use
+`env-flag` for ambient credentials that cannot be detected synchronously (for
+example GCP metadata-server ADC under Workload Identity), where an operator sets
+an explicit opt-in flag to assert the credential is reachable; the real token
+exchange still happens asynchronously in the provider transport at request time.
 
 ### setup fields
 

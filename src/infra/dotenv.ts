@@ -104,6 +104,14 @@ const BLOCKED_WORKSPACE_DOTENV_KEYS = new Set([
   "CLAWHUB_URL",
   "CLOUDSDK_PYTHON",
   "COMSPEC",
+  // GCP Vertex metadata-server ADC opt-in plus the project/location gates that
+  // arm it. Honoring these from an untrusted workspace .env would let a repo opt
+  // the process into the node's ambient cloud identity, so they must come from
+  // trusted shell/global env.
+  "GCLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_VERTEX_USE_GCP_METADATA",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "HOMEBREW_BREW_FILE",

@@ -164,6 +164,31 @@ describe("google web search provider", () => {
     expect(Object.getOwnPropertyDescriptor(merged, "gemini")?.enumerable).toBe(false);
   });
 
+  it("does not copy the Vertex ADC marker into the Gemini provider fallback", () => {
+    // The non-secret Vertex ADC marker authorizes the Vertex transport only; it is
+    // not a Gemini API key, so it must not be sent as x-goog-api-key. The provider
+    // baseUrl is still carried through.
+    const merged = testing.withGoogleModelProviderFallbacks(
+      { provider: "gemini" },
+      {
+        models: {
+          providers: {
+            google: createGoogleModelProviderConfig({
+              apiKey: "gcp-vertex-credentials",
+              baseUrl: "https://generativelanguage.googleapis.com/proxy/v1beta/",
+            }),
+          },
+        },
+      },
+    );
+
+    const mergedGemini = merged?.gemini as Record<string, unknown> | undefined;
+    expect(mergedGemini).toEqual({
+      providerBaseUrl: "https://generativelanguage.googleapis.com/proxy/v1beta/",
+    });
+    expect(mergedGemini?.providerApiKey).toBeUndefined();
+  });
+
   it("defaults the Gemini web search model and trims explicit overrides", () => {
     expect(testing.resolveGeminiModel()).toBe("gemini-2.5-flash");
     expect(testing.resolveGeminiModel({ model: "  gemini-2.5-pro  " })).toBe("gemini-2.5-pro");
